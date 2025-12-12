@@ -1,0 +1,58 @@
+------------------------------------------------------------------------------------------------------------------------
+Phase 1: Data Ingestion & Preprocessing
+------------------------------------------------------------------------------------------------------------------------
+
+Project Setup & Architecture: Create the directory structure (/data, /src, /results) and set up a Python virtual environment.
+    Install core dependencies (numpy, scipy, pandas, matplotlib, scikit-learn).                                     Done
+Data Loading Module: Write a function to read the raw .dat or .csv files containing cell density snapshots.         Done
+    Ensure it can handle different experimental conditions (different initial densities).
+Data Smoothing: Implement the central_rolling_mean or Gaussian smoothing (using scipy.ndimage) to reduce noise in the
+    raw density data. This is critical because calculating derivatives on noisy data amplifies error.               Done
+Grid & Domain Definition: Define the spatial grid (x-coordinates) and time vector (t-coordinates) based on the pixel
+    resolution and stride information provided in the original code.
+
+------------------------------------------------------------------------------------------------------------------------
+Phase 2: Feature Engineering (The "Basis" Library)
+------------------------------------------------------------------------------------------------------------------------
+
+Compute Temporal Derivatives ($\partial C / \partial t$): Implement a method to calculate the rate of change of density
+    over time using finite differences (e.g., np.gradient or 4th-order central difference) on the smoothed data.
+Compute Spatial Gradients ($\nabla C$): Write functions to calculate the first spatial derivative of the density data
+    across the grid.
+Compute Diffusion Terms ($\nabla^2 C$): Write functions to calculate the second spatial derivative (Laplacian).
+    This represents random cell movement (diffusion).
+Construct Non-Linear Terms: Create functions to generate non-linear interaction terms likely to appear in biology,
+    such as logistic growth ($C(1 - C/K)$) or polynomial terms ($C^2, C^3$).
+Build the Design Matrix ($\Theta$): Assemble all your spatial terms (Gradient, Diffusion, Logistic, etc.) into a large
+      matrix $\Theta$. This matrix maps "Candidate Physics" to "Observed Dynamics."
+        Rows = Every point in space-time.
+        Columns = Value of each specific term (e.g., Col 1 is Diffusion, Col 2 is Advection, etc.).
+
+------------------------------------------------------------------------------------------------------------------------
+Phase 3: Model Discovery (Sparse Regression)
+------------------------------------------------------------------------------------------------------------------------
+
+Implement Sparse Regression Algorithms: Create a class (similar to stepwiseRegression.py) that includes Least Squares
+    (numpy.linalg.lstsq) and sparse methods like Lasso (L1 regularization) or Sequential Threshold Ridge regression (STRidge).
+
+Variable Selection Logic: Implement the iterative loop that:
+    Fits the model.
+    Identifies terms with coefficients close to zero.
+    Threshholds/prunes them.
+    Refits until convergence (finding the "Pareto frontier" of simple vs. accurate).
+Equation Extraction: Write a utility that takes the final non-zero coefficients and outputs the discovered equation
+    in a human-readable format (e.g., $\frac{\partial C}{\partial t} = 0.5 \nabla^2 C + 0.1 C (1-C)$).
+
+------------------------------------------------------------------------------------------------------------------------
+Phase 4: Optimization & Simulation
+------------------------------------------------------------------------------------------------------------------------
+
+Forward Solver (Numerical Integration): Implement a 1D PDE solver using scipy.integrate.solve_ivp or a simple
+    finite-difference generic solver (Forward Euler/Crank-Nicolson) to simulate density over time given an equation and
+     parameters.
+Parameter Refinement (Optimization): Create an optimization loop (using scipy.optimize.minimize) that takes the structure
+    found in Task 12 and fine-tunes the coefficients to minimize the error between your Simulation (Task 13) and the
+    Real Data (Task 3).
+Validation & Visualization: Create a plotting module to overlay the Simulation results on top of the Experimental data.
+    Include metrics like RMSE (Root Mean Square Error) to quantify how well your discovered physics explains the wound
+    healing process.
