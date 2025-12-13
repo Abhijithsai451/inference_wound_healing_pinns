@@ -5,7 +5,7 @@ from logging.handlers import RotatingFileHandler
 def setup_logger(
         name= "inference_wound_healing_pinns",
         log_file="app_log.log",
-        level=logging.INFO,
+        level=logging.DEBUG,
         max_bytes=10*1024*1024,
         backup_count=5
     ):

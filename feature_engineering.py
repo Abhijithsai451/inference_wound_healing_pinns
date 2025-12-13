@@ -5,7 +5,7 @@ from logging_utils import setup_logger
 logger = setup_logger()
 
 # ----------------------------------------------------------------------
-# A. Temporal Derivative (dC/dt) - Phase 2, Task 1
+# A. Temporal Derivative (dC/dt)
 # ----------------------------------------------------------------------
 def compute_temporal_derivative(df: pd.DataFrame, dt:float, density_col:str='density_gaussian') -> pd.DataFrame:
     """
@@ -13,6 +13,13 @@ def compute_temporal_derivative(df: pd.DataFrame, dt:float, density_col:str='den
     across the time axis (t_coordinates)
     """
     logger.info(f"computing temporal derivative (dC/dt) on column {density_col}")
+
+    # Check for duplicates before pivoting
+    duplicates = df.groupby(['x_coordinate', 't_coordinate'])[density_col].count()
+    logger.info(f"Number of duplicates before aggregation: {len(duplicates[duplicates > 1])}")
+
+    # 1. Aggregate duplicate x_coordinate, t_coordinate pairs by taking the mean
+    df = df.groupby(['x_coordinate', 't_coordinate'])[density_col].mean().reset_index()
 
     # 1. Pivot the smoothed Data into a 2D matrix (Space + Time)
     C_matrix = df.pivot(
@@ -38,7 +45,7 @@ def compute_temporal_derivative(df: pd.DataFrame, dt:float, density_col:str='den
     return df
 
 # ----------------------------------------------------------------------
-# B. Spatial Derivatives ($\nabla C$ and $\nabla^2 C$) - Phase 2, Tasks 2 & 3
+# B. Spatial Derivatives ($\nabla C$ and $\nabla^2 C$)
 # ----------------------------------------------------------------------
 def compute_spatial_derivatives(df: pd.DataFrame, density_col: str = 'density_gaussian') -> pd.DataFrame:
     """
@@ -89,7 +96,7 @@ def compute_spatial_derivatives(df: pd.DataFrame, density_col: str = 'density_ga
 
 
 # ----------------------------------------------------------------------
-# C. Construct Non-Linear Terms - Phase 2, Task 4
+# C. Construct Non-Linear Terms
 # ----------------------------------------------------------------------
 
 def construct_non_linear_terms(df: pd.DataFrame, density_col: str = 'density_gaussian',
@@ -130,3 +137,45 @@ def construct_non_linear_terms(df: pd.DataFrame, density_col: str = 'density_gau
 
     logger.info(f"Non-linear terms added: C_logistic, C_pow2, C_pow3, C_gradC, and C_laplacian_C.")
     return df
+
+
+# ----------------------------------------------------------------------
+# D. Build the Design Matrix Theta
+# ----------------------------------------------------------------------
+
+def build_design_matrix(df: pd.DataFrame, terms: list) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Assembles the Design Matrix (Theta) from selected columns and the target vector (Y = dC/dt).
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing all computed features and the target 'dC_dt'.
+        terms (list): A list of column names to include as candidate features in Theta.
+
+    Returns:
+        tuple[pd.DataFrame, pd.DataFrame]: (Theta, Y) - The Design Matrix and the Target Vector,
+                                            with rows containing NaNs removed.
+    """
+    logger.info("Building the Design Matrix (Theta) and Target Vector (Y).")
+
+    # 1. Define the Target Vector (Y = dC/dt)
+    Y = df['dC_dt'].to_frame(name='dC_dt')
+
+    # 2. Define the Design Matrix (Theta) using the specified candidate terms
+    # Ensure the Density_Raw column is included in the DataFrame passed to this function.
+    Theta = df[terms]
+
+    # 3. Critical Step: Handle NaNs
+    # Derivatives calculated using finite differences (np.gradient) handle boundaries well,
+    # but other processing steps might introduce NaNs. We must remove any row
+    # where EITHER the target (Y) OR any feature (Theta) is NaN.
+    combined = pd.concat([Y, Theta], axis=1).dropna()
+
+    # Separate the cleaned matrices
+    Theta_final = combined[terms]
+    Y_final = combined['dC_dt'].to_frame(name='dC_dt')
+
+    logger.info(f"Design Matrix (Theta) built. Initial rows: {len(df)}. Final rows after cleaning: {len(Theta_final)}.")
+    logger.info(f"Theta Shape: {Theta_final.shape} (Rows: Space-Time, Columns: Candidate Terms)")
+    logger.info(f"Y Shape: {Y_final.shape}")
+
+    return Theta_final, Y_final

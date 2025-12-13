@@ -38,7 +38,7 @@ Implement Sparse Regression Algorithms: Create a class (similar to stepwiseRegre
 Variable Selection Logic: Implement the iterative loop that:
     Fits the model.
     Identifies terms with coefficients close to zero.
-    Threshholds/prunes them.
+    Thresholds/prunes them.
     Refits until convergence (finding the "Pareto frontier" of simple vs. accurate).
 Equation Extraction: Write a utility that takes the final non-zero coefficients and outputs the discovered equation
     in a human-readable format (e.g., $\frac{\partial C}{\partial t} = 0.5 \nabla^2 C + 0.1 C (1-C)$).
