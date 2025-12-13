@@ -1,124 +1,121 @@
-# Python Implementation Plan for Wound Healing (TRAM)
+# Python Implementation Plan: PINNs for Wound Healing (TRAM)
 
-This document outlines the 30-step roadmap to port the `wound_healing_tram` FEniCS workflow into a pure Python scientific stack.
+This document outlines the 30-step roadmap to reimplement the `wound_healing_tram` project using **Physics-Informed Neural Networks (PINNs)** instead of SINDy/FEniCS.
 
-## Phase 1: Advanced Configuration & Data Management
+## Phase 1: Deep Learning Setup & Data Ingestion
 
-1.  **Global Settings Module**
-    *   Create `config_manager.py` that loads and validates settings found in `vsiParams.py` and `Step0_makeVSIParams.py`.
-    *   Support "parameter sets" (combinations of smoothing windows, grid sizes) to allow batch processing.
+1.  **Framework Initialization**
+    *   Set up PyTorch environment.
+    *   Optional: Evaluate libraries like DeepXDE if rapid prototyping is desired, otherwise stick to pure PyTorch for flexibility.
 
-2.  **Experiment Manifest Builder**
-    *   Write a script to scan the `data` folder (2600+ files) and build a structured `manifest.csv`.
-    *   Extract metadata: `initCells`, `drugConcentration` (if applicable), `replicateID`, and `timestamp`.
+2.  **Tensor Data Loader**
+    *   Refactor data handling to convert DataFrames into PyTorch Tensors `(x_tensor, t_tensor, C_tensor)`.
+    *   Support batching if datasets are massive (though PINNs often use full-batch for small PDEs).
 
-3.  **Data Ingestion Class**
-    *   Implement a `TramDataLoader` class that uses the manifest to load specific experimental groups.
-    *   Ensure robust error handling for missing or corrupted files.
+3.  **Collocation Point Sampler**
+    *   Implement a sampler to generate random $(x, t)$ points inside the domain boundaries.
+    *   These points are where we enforce the Physics Loss ($L_{PHY}$), even where no data exists.
 
-4.  **Advanced Smoothing (Gaussian + Moving Average)**
-    *   Implement the exact smoothing logic from `Step1_read_write.py`.
-    *   Likely involves a specific sequence of temporal rolling means followed by spatial Gaussian filtering.
+4.  **Data Normalization (MinMax)**
+    *   Implement scaling to map inputs $(x, t)$ and output $C$ to $[0, 1]$ or $[-1, 1]$.
+    *   Crucial for Neural Network convergence.
 
-5.  **Grid Interpolation Utility**
-    *   Create a function to interpolate experimental data (irregular or pixel-based) onto a uniform Finite Difference grid (`dx`) required for simulations.
+5.  **Synthetic Noise Injector**
+    *   Add a utility to purposefully degrade training data.
+    *   Objective: Prove PINNs' superiority in handling noise compared to differentiation-based methods (SINDy).
 
-6.  **Data Validation Suite**
-    *   Write unit tests to detect data anomalies: NaNs, infinite values, or non-physical negative densities.
+## Phase 2: Neural Network Architecture ($U_{\theta}$)
 
-## Phase 2: Enhanced Feature Engineering
+6.  **MLP Backbone**
+    *   Construct the core approximator network (e.g., `feature_dim -> [64, 64, 64, 64] -> 1`).
+    *   Use `tanh` or `swish` activations (smooth derivatives are required for calculating gradients).
 
-7.  **Finite Difference Stencils**
-    *   Implement high-order finite difference coefficients (stencil size 5 or 7) for `dC/dx` and `d^2C/dx^2`.
-    *   Goal: Minimize numerical error on the spatial grid.
+7.  **Feature Embedding / Input Mapping**
+    *   Implement Fourier Feature Embedding if the density has sharp gradients (wound edges).
 
-8.  **Physics Kernel Library**
-    *   Create a library of functions mimicking `Step2_generate_basis.py`.
-    *   Terms: Diffusion ($\nabla^2 C$), Advection ($\nabla C$), Logistic Growth ($C(1-C)$), and Chemotaxis logic.
+8.  **Weight Initialization**
+    *   Use Xavier (Glorot) initialization.
 
-9.  **Interaction Terms Generator**
-    *   Implement logic to analytically generate cross-terms (e.g., $C \cdot \nabla C$, $C^2 \nabla C$) from a list of primitive features.
+9.  **Inverse Parameter Layer**
+    *   Create a custom `nn.Parameter` class to hold the physics coefficients ($\lambda_{diff}, \lambda_{growth}$).
+    *   These are the "unknowns" we solve for.
 
-10. **Design Matrix Assembler ($\Theta$)**
-    *   Write a function to construct the $\Theta$ matrix.
-    *   Structure: Columns = Physics Terms, Rows = Space-Time Points.
+## Phase 3: Physics-Informed Loss Function ($L_{PHY}$)
 
-11. **Feature Scaling/Normalization**
-    *   Implement a standardizer (e.g., `StandardScaler`) for columns of $\Theta$.
-    *   Critical for regression stability when mixing small diffusion scales with large growth scales.
+10. **Automatic Differentiation Wrapper**
+    *   Write a helper `get_gradients(u, x)` utilizing `torch.autograd.grad`.
+    *   Must compute higher-order derivatives: $u_t, u_x, u_{xx}$.
 
-12. **Time Derivative Calculator**
-    *   Implement a robust `dC/dt` calculator.
-    *   Consider using Spline Interpolation derivatives instead of raw finite differences to handle noise in time series.
+11. **PDE Residual Definition**
+    *   Define the physics mismatch: $f = u_t - (D \cdot u_{xx} + \rho \cdot u(1-u))$.
+    *   This term drives the "Discovery".
 
-## Phase 3: Variable Selection & Model Discovery
+12. **Parameter Constraints**
+    *   Enforce physical positivity ($D > 0, \rho > 0$).
+    *   Implementation: Parametrise as $D = \exp(\hat{D})$ or `softplus(D)`.
 
-13. **Stepwise Regression Engine**
-    *   Port logic from `stepwiseRegression.py` to a Python class.
-    *   Core mechanism: Backward Elimination (start full, drop terms one by one).
+13. **Data Loss ($L_{Data}$)**
+    *   Standard MSE loss between Network Prediction and Measured Experimental Data.
 
-14. **Ridge Regression Subroutine**
-    *   Implement `Ridge` solver with Cross-Validation (CV) to auto-select optimal regularization strength ($\alpha$) within the loop.
+14. **Boundary Condition Loss ($L_{BC}$)**
+    *   Enforce Neumann conditions ($\partial C/\partial x = 0$) at domain boundaries $x=0, x=L$.
 
-15. **F-Test Implementation**
-    *   Implement the statistical F-test used in the original code.
-    *   Logic: Only drop a term if the increase in error is statistically insignificant.
+15. **Total Loss Aggregation**
+    *   $L_{Total} = w_{Data}L_{Data} + w_{PHY}L_{PHY} + w_{BC}L_{BC}$.
 
-16. **Group Selection Logic**
-    *   Port the "Grouping" feature from `Step3_linear_VSI.py`.
-    *   Rules: Certain terms (e.g., advective group) must be dropped or kept together to maintain physical consistency.
+## Phase 4: Training & Optimization Logic
 
-17. **Model Stability Check**
-    *   Add post-discovery validation.
-    *   Example: Diffusion coefficient must be positive. If negative, reject/penalize the model.
+16. **Optimizer Strategy (Adam)**
+    *   Setup Adam optimizer for the first phase of training (robust global search).
 
-18. **Equation Stringifier**
-    *   Create a formatter to output the discovered SINDy model as a human-readable LaTeX equation.
+17. **Refinement Strategy (L-BFGS)**
+    *   Implement L-BFGS (Quasi-Newton) closure for the second phase.
+    *   Critical for finding high-precision parameter values in inverse problems.
 
-19. **VSI Reporting**
-    *   Generate a "Discovery Report" tracking which terms were dropped at which step and why (F-score vs Threshold).
+18. **Learning Rate Scheduler**
+    *   Implement `ReduceLROnPlateau` or Cosine Decay.
 
-## Phase 4: Optimization & Refinement
+19. **Dynamic Loss Balancing**
+    *   Implement algorithms (e.g., GradNorm or simple annealing) to adjust weights $w_{Data}$ vs $w_{PHY}$ during training so physics doesn't overpower data (or vice versa).
 
-20. **ODE System Generator**
-    *   Write a function converting the discovered spatial PDE into a system of ODEs ($dC_i/dt = f(C_i, ...)$).
+20. **Training Loop**
+    *   The main iteration loop updating both Weights ($\theta$) and Physics params ($\lambda$).
 
-21. **Forward Solver (IVP)**
-    *   Implement time-stepping using `scipy.integrate.solve_ivp`.
-    *   Configuration: Must use implicit methods (e.g., `BDF`, `Radau`) for stiff PDE systems.
+21. **Checkpointing System**
+    *   Save model state and current parameter estimates every $N$ epochs.
 
-22. **Loss Function Definition**
-    *   Define $J(\theta) = ||C_{sim} - C_{data}||^2 + \lambda ||\theta||^2$.
+## Phase 5: Evaluation & Validation
 
-23. **Parameter Bounds Manager**
-    *   Map discovered parameters to physical limits (e.g., $D \in [0, D_{max}]$).
-    *   Prevents optimizer from drifting into non-physical regimes.
+22. **Parameter Convergence Monitor**
+    *   Plot the trajectory of discovered parameters ($D, \rho$) over epochs.
+    *   Verify they settle to a constant value.
 
-24. **Adjoint-Like Optimization Loop**
-    *   Implement the minimization routine using `scipy.optimize.minimize` (L-BFGS-B) to refine the coefficients found in Phase 3.
+23. **Solution Reconstruction**
+    *   Evaluate the trained PINN on a high-resolution grid.
+    *   Visualize the "Smoothed / Denoised" Physics Solution.
 
-## Phase 5: Sensitivity Analysis & Validation
+24. **Residual Field Analysis**
+    *   Plot $|f(x,t)|$ across the domain.
+    *   High residuals indicate regions where the proposed PDE model fails to capture reality.
 
-25. **Sensitivity Matrix Calculator**
-    *   Port `Step6a_SensitivityData.py`.
-    *   Method: Perturb each parameter by $\pm 1\%$ and measure output deviation to quantify parameter importance.
+25. **Extrapolation / Generalization Test**
+    *   Train on time $0 \to T/2$, test prediction accuracy on $T/2 \to T$.
 
-26. **Confidence Interval Estimation**
-    *   Calculate uncertainty intervals for parameters based on regression residuals and Hessian approximation.
+26. **Noise Robustness Benchmark**
+    *   Run training sequence on datasets with 1%, 5%, 10% noise and record parameter error.
 
-27. **Forward Prediction Validator**
-    *   Implement "Hold-out" testing: Optimize on $t=0..t_{half}$, predict $t_{half}..t_{end}$ to assess generalization.
+## Phase 6: Advanced TRAM-Specific Features
 
-28. **Residual Analysis**
-    *   Visualize $C_{data} - C_{model}$ heatmaps.
-    *   Goal: Identify systematic spatial or temporal biases (e.g., errors concentrated at wound edges).
+27. **Multi-Fidelity Loss**
+    *   (Optional) If mixing high-quality and low-quality datasets, assume different noise variances ($\sigma^2$) in the loss.
 
-29. **Sensitivity Plotter**
-    *   Port `Step6b_PlotSensitivityData.py` to create Tornado plots or Bar charts of parameter sensitivity indices.
+28. **Sparse Equation Discovery (SINDy-PINN)**
+    *   Replace the fixed PDE residual with a library of terms: $f = u_t - \sum \lambda_i \Theta_i$.
+    *   Add $L_1$ regularization to $\lambda$ vector to drive trivial terms to zero.
 
-30. **Final Report Generator**
-    *   Create a clean summary output including:
-        *   Data smoothing verification.
-        *   The Discovered Equation.
-        *   Goodness-of-Fit plots.
-        *   Sensitivity Analysis results.
+29. **Bayesian PINN (Uncertainty)**
+    *   Implement Dropout-based or HMC-based uncertainty estimation for the discovered parameters.
+    *   Matches the "Sensitivity Analysis" goal of the original code.
+
+30. **Final Comparative Report**
+    *   Generate a document comparing PINN results vs the original FEniCS/SINDy results.
