@@ -10,7 +10,7 @@ from logging_utils import setup_logger
 logger = setup_logger()
 
 # Importing the data files
-ROOT_DIR = "./data/cell_density"
+ROOT_DIR = "data/cell_density"
 
 CUSTOM_ROLLING_WINDOW = 7
 CUSTOM_GAUSSIAN_SIGMA = 1.5

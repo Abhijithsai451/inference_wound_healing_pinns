@@ -1,18 +1,18 @@
 import pandas as pd
 import os
 from logging_utils import setup_logger
-from data_preprocessing import import_and_preprocess_data, DELTA_T, L_DOMAIN, define_grid_coordinates
-from feature_engineering import compute_temporal_derivative, compute_spatial_derivatives, construct_non_linear_terms, \
+from wound_healing_jin.data_preprocessing import import_and_preprocess_data
+from wound_healing_jin.feature_engineering import compute_temporal_derivative, compute_spatial_derivatives, construct_non_linear_terms, \
     build_design_matrix
 from regressors import Regressor
 from validation import calculate_rmse, plot_density_evolution
 from simulation import ForwardSolver, ParameterRefiner, pivot_data_for_simulation
 
 logger = setup_logger()
-ROOT_DIR = "./data/cell_density"
+ROOT_DIR = "wound_healing_jin/data/cell_density"
 L_DOMAIN = 1.0
 DELTA_T = 0.01
-PROCESSED_DATA_FILE = "smoothed_density_data_processed.csv"
+PROCESSED_DATA_FILE = "wound_healing_jin/smoothed_density_data_processed.csv"
 
 # SINDy model parameters
 SINDY_THRESHOLD = 0.01

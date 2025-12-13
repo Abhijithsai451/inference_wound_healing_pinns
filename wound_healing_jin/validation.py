@@ -5,7 +5,7 @@ import os
 from logging_utils import setup_logger
 
 logger = setup_logger()
-
+RESULTS_DIR = "wound_healing_jin/results"
 def calculate_rmse(C_sim: np.ndarray, C_target: np.ndarray) -> float:
     """
     Calculates the Root Mean Square Error (RMSE) between simulated and target data.
@@ -33,7 +33,7 @@ def plot_density_evolution(
     C_target: np.ndarray,
     rmse: float,
     equation_str: str,
-    output_filename: str = 'validation_plot.png'
+    output_filename: str = 'wound_healing_jin/validation_plot.png'
 ):
     """
     Generates a plot comparing simulated density profiles against experimental data
@@ -86,8 +86,8 @@ def plot_density_evolution(
     plt.tight_layout(rect=[0, 0, 1, 0.9])
 
     # Save the figure
-    if not os.path.exists("results"):
-        os.makedirs("results")
-    plt.savefig(os.path.join("results", output_filename))
+    if not os.path.exists(RESULTS_DIR):
+        os.makedirs(RESULTS_DIR)
+    plt.savefig(os.path.join(RESULTS_DIR, output_filename))
     plt.close(fig)
     logger.info(f"Plot saved to results/{output_filename}")
