@@ -68,3 +68,26 @@ def convert_to_tensors(raw_df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor
     logger.info(f"C_tensor shape (Data Values): {C_tensor.shape}")
 
     return X_tensor, C_tensor, scaler
+
+def sample_collocation_points(num_points: int) -> torch.Tensor:
+    """
+    Generates random collocation points (x,y,t) within the normalized domain [0 ,1] x [0,1] x [0,1].
+    """
+    logger.info(f"Generating {num_points: } random collocation points...")
+    X_collocation = torch.rand(num_points, 3, dtype=torch.float32)
+    logger.info(f"Collocation points generated. Shape: {X_collocation.shape}")
+    return X_collocation
+
+def noise_injection(C_tensor: torch.Tensor, sigma: float = 0.05)-> torch.Tensor:
+    """
+    Adds Gaussian Noise to the normalized Cell Density Tensor C(x,t).
+    THe noise STD(sigma -> noise percentage) is calculated as a percentage of the data's normalized range.
+    """
+    logger.info(f"Adding Gaussian Noise to C_tensor with STD={sigma:.2%}...")
+
+    noise = torch.randn_like(C_tensor) * sigma
+    C_tensor_noisy = C_tensor + noise
+    C_tensor_noisy = torch.clamp(C_tensor_noisy, min=0.0, max=1.0)
+    logger.info(f"Noise added. Shape: {C_tensor_noisy.shape}")
+
+    return C_tensor_noisy

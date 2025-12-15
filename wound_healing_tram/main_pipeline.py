@@ -1,12 +1,20 @@
 from pathlib import Path
 
 import pandas as pd
+from torch.distributed.tensor.parallel import loss_parallel
+
 from data_preprocessing import import_data
 from logging_utils import setup_logger
+from wound_healing_tram.loss_functions import PINNLoss
+from wound_healing_tram.pinn_model import WoundHealingPINN, USE_FOURIER_FEATURES, get_device
+from wound_healing_tram.tensor_data_utils import sample_collocation_points, noise_injection
 from wound_healing_tram.visualize_data import visualize_plots
 from tensor_data_utils import convert_to_tensors
-logger = setup_logger()
 
+logger = setup_logger()
+DEVICE = get_device()
+NUM_COLLOCATION_POINTS = 50000
+NOISE_STD = 0.01
 def main():
 
     print("====================================================================================================")
@@ -39,7 +47,37 @@ def main():
     logger.info("Data Refactoring and Tensor Conversion")
     X_data, C_data, scaler = convert_to_tensors(raw_cell_density_data)
 
-    print(C_data[1:10])
+    # Collocation point Generation
+    X_collocation_points = sample_collocation_points(NUM_COLLOCATION_POINTS)
+
+    # Adding noise to the data
+    C_data_noisy = noise_injection(C_data, NOISE_STD)
+
+    logger.info("Collocation Points Generated and Noise Injected.")
+    logger.info("Moving all the data tensors to the device for GPU Acceleration.")
+    X_data = X_data.to(DEVICE)
+    C_data_noisy = C_data_noisy.to(DEVICE)
+    X_collocation_points = X_collocation_points.to(DEVICE)
+
+    logger.info("Neural Network Architecture>>>>")
+
+    pinn_model = WoundHealingPINN(use_ffe=USE_FOURIER_FEATURES)
+    pinn_model = pinn_model.to(DEVICE)
+    loss = PINNLoss(model= pinn_model, scaler = scaler, lambda_data = 100.0, lambda_phy = 1.0)
+
+    X_boundary_placeholder = X_data[0:1000]
+    L_total, L_data, L_phy, L_bc = loss.calculate_total_loss(
+        X_data = X_data,
+        C_data = C_data_noisy,
+        X_collocation=X_collocation_points,
+        X_boundary=X_boundary_placeholder
+    )
+
+    logger.info("---Initial Loss Calculation Complete.-----")
+
+    D_init, rho_init = pinn_model.pde_params
+    logger.info(f"Total Loss: {L_total:.4f}, \nData Loss: {L_data:.4f}, \nPhysics Loss: {L_phy:.4f}, \nBC Loss: {L_bc:.4f},"
+                f" Diffusivity (D): {D_init}, \nProliferation (rho): {rho_init} ")
 
 
     logger.info("\nExecution complete ")
