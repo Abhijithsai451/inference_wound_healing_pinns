@@ -41,7 +41,7 @@ def import_data()-> pd.DataFrame:
                         'C_Density': C_values
                     })
                     all_data_slices.append(temp_df)
-                    logger.info(f"imported {unique_id} with {len(C_values)} cell density values")
+                    logger.debug(f"imported {unique_id} with {len(C_values)} cell density values")
                 except Exception as e:
                     logger.error(f"Error processing file {file_path}: {e}")
     final_df = pd.concat(all_data_slices, ignore_index=True)

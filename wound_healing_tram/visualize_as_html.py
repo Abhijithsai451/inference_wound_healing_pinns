@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 import altair as alt
@@ -102,11 +104,17 @@ def plot_density_histogram(df: pd.DataFrame, save_path: str = 'output/density_hi
 
     return histogram
 
-def visualize_data(df: pd.DataFrame):
+def visualize_in_html(df: pd.DataFrame):
+    output_dir = Path('output')
+    output_dir.mkdir(exist_ok=True)
+    if output_dir.exists():
+        logger.info(f"Output directory {output_dir} already exists. ")
+    else:
+        logger.info(f"Error: Failed to create output directory 'output/'. Please create it manually.")
     first_time_slice_id = df['ID'].iloc[0]
     logger.info(f"Visualizing initial conditions for time slice: {first_time_slice_id} ")
 
-    center_x_index = 9
+    center_x_index = 21
     # 2. Plot Spatial Heatmap (2D View of the Wound)
     logger.info("-> Generating 2D Spatial Heatmap (output/cell_density_heatmap.html)...")
     plot_spatial_heatmap(df, first_time_slice_id)
