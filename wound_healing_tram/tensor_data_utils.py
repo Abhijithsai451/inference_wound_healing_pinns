@@ -78,6 +78,33 @@ def sample_collocation_points(num_points: int) -> torch.Tensor:
     logger.info(f"Collocation points generated. Shape: {X_collocation.shape}")
     return X_collocation
 
+def sample_boundary_points(num_of_points: int)-> torch.Tensor:
+    """
+    Generates the points on the normalized boundaries when the initial time t= 0 and has only the spatial dimension.
+    """
+    logger.info(f"[BOUNDARY SAMPLER] Generating {num_of_points} boundary points...")
+
+    N_t = int(num_of_points * 0.2)
+    N_s = int(num_of_points * 0.8)
+
+    # Initial Condition points at t = 0
+    X_init = torch.rand(N_t, 3, dtype=torch.float32)
+    X_init[:, 2] = 0.0 # Setting the T_norm values to minimum 0
+
+    # Spatial Boundary Condition points
+    X_bc = torch.rand(N_s, 3, dtype=torch.float32)
+
+    # Boundary faces (x =0, x=1, y=0, y=1)
+    boundary_indices = torch.randint(0,4, (N_s,))
+
+    X_bc[boundary_indices == 0, 0] = 0.0
+    X_bc[boundary_indices == 1, 0] = 1.0
+    X_bc[boundary_indices == 2, 1] = 0.0
+    X_bc[boundary_indices == 3, 1] = 1.0
+
+    logger.info(f"[BOUNDARY SAMPLER] Initial Condition points: {N_t:,} | Boundary Condition points: {N_s:,}")
+    return X_init, X_bc
+
 def noise_injection(C_tensor: torch.Tensor, sigma: float = 0.05)-> torch.Tensor:
     """
     Adds Gaussian Noise to the normalized Cell Density Tensor C(x,t).

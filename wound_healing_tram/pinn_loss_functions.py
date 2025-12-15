@@ -1,12 +1,13 @@
+from typing import Tuple
+
 import torch
 import torch.nn as nn
 import torch.autograd as autograd
 from sklearn.preprocessing import MinMaxScaler
-from pinn_model import WoundHealingPINN
+from pinn_model import WoundHealingPINN, DEVICE
 from logging_utils import setup_logger
 
 logger = setup_logger()
-
 
 class PINNLoss:
     """
@@ -35,18 +36,6 @@ class PINNLoss:
 
         logger.info(f"Jacobian Scaling Factors computed:")
         logger.info(f"dX_scale: {self.dX_scale:.2f}, dY_scale: {self.dY_scale:.2f}, dT_scale: {self.dT_scale:.2f}, dC_scale: {self.dC_scale:.2f}")
-
-    def calculate_total_loss(self, X_data, C_data, X_collocation, X_boundary):
-        """
-        Calculates the total weighted loss: L_Total = L_Data + L_Phy + L_BC.
-        """
-        L_data = self._data_loss(X_data, C_data)
-        L_phy = self._physics_loss(X_collocation)
-        L_bc = torch.tensor(0.0)  # Placeholder
-
-        L_total = self.lambda_data * L_data + self.lambda_phy * L_phy + self.lambda_bc * L_bc
-
-        return L_total, L_data, L_phy, L_bc
 
     def _data_loss(self, X_data, C_data) -> torch.Tensor:
         """
@@ -91,5 +80,49 @@ class PINNLoss:
 
         return L_phy
 
-    def _boundary_loss(self, X_boundary) -> torch.Tensor:
-        return torch.tensor(0.0)
+    def _boundary_loss(self, X_init: torch.Tensor, X_spatial: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Calculates the boundary condition and initial condition loss.
+        L_bc = L_init + L_neumann
+        """
+        c_hat_ic = self.model(X_init)
+        c_target_ic = torch.zeros_like(c_hat_ic).to(DEVICE)
+        L_ic = nn.MSELoss()(c_hat_ic, c_target_ic)
+
+        X_spatial.requires_grad_(True)
+        c_hat_bc = self.model(X_spatial)
+
+        gradients = autograd.grad(c_hat_bc, X_spatial, torch.ones_like(c_hat_bc), create_graph=True, allow_unused=True)[0]
+        # X-boundaries
+        x_indices = torch.isclose(X_spatial[:, 0], torch.tensor(0.0).to(DEVICE))
+        dc_dx_norm = gradients[x_indices, 0]
+
+        # Y-boundaries
+        y_indices = torch.isclose(X_spatial[:, 1], torch.tensor(0.0).to(DEVICE))
+        dc_dy_norm = gradients[y_indices, 1]
+
+        # target for all the spatial derivatives is zero (zero flux)
+        target_zero = torch.zeros_like(dc_dx_norm).to(DEVICE)
+        L_neumann_x = nn.MSELoss()(dc_dx_norm, target_zero)
+
+        target_zero = torch.zeros_like(dc_dy_norm).to(DEVICE)
+        L_neumann_y = nn.MSELoss()(dc_dy_norm, target_zero)
+        L_neumann = L_neumann_x + L_neumann_y
+
+        # Total Boundary Loss
+        L_bc = L_ic + L_neumann
+
+
+        return L_bc, L_ic, L_neumann
+
+    def calculate_total_loss(self, X_data, C_data, X_collocation, X_initial, X_spatial):
+        """
+        Calculates the total weighted loss: L_Total = L_Data + L_Phy + L_BC.
+        """
+        L_data = self._data_loss(X_data, C_data)
+        L_phy = self._physics_loss(X_collocation)
+        L_bc, L_ic, L_neumann = self._boundary_loss(X_initial, X_spatial)
+
+        L_total = self.lambda_data * L_data + self.lambda_phy * L_phy + self.lambda_bc * L_bc
+
+        return L_total, L_data, L_phy, L_bc, L_ic, L_neumann
