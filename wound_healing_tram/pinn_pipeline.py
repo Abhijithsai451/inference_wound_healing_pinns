@@ -6,7 +6,7 @@ from torch.distributed.tensor.parallel import loss_parallel
 
 from pinn_data_preprocessing import import_data
 from logging_utils import setup_logger
-from wound_healing_tram.pinn_evaluation_utils import plot_training_convergence
+from wound_healing_tram.pinn_evaluation_utils import plot_training_convergence, generate_prediction_grid
 from wound_healing_tram.pinn_loss_functions import PINNLoss
 from wound_healing_tram.pinn_model import WoundHealingPINN, USE_FOURIER_FEATURES, get_device
 from wound_healing_tram.pinn_trainer import PINNTrainer
@@ -16,11 +16,12 @@ from tensor_data_utils import convert_to_tensors
 
 logger = setup_logger()
 DEVICE = get_device()
-NUM_COLLOCATION_POINTS = 2000
-NUM_BOUNDARY_POINTS = 1000
+NUM_COLLOCATION_POINTS = 200
+NUM_BOUNDARY_POINTS = 100
 NOISE_STD = 0.01
-EPOCHS = 300
+EPOCHS = 30
 LR = 1e-3
+GRID_RESOLUTION = 50
 def main():
 
     print("====================================================================================================")
@@ -122,7 +123,13 @@ def main():
                               lbfgs_history=lbfgs_loss_history,
                               output_filename="wound_healing_tram_convergence")
 
-    logger.info("\nExecution complete ")
+    df_predicted_solution = generate_prediction_grid(
+        model=pinn_model,
+        scaler=scaler,
+        resolution=GRID_RESOLUTION
+    )
+    logger.info(f"Solution reconstruction prepared. Final DataFrame head:\n{df_predicted_solution.head()}")
+    logger.info("Execution complete ")
 
 if __name__ == "__main__":
     main()

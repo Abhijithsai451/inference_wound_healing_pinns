@@ -1,9 +1,13 @@
 from pathlib import Path
-
+import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from typing import List, Dict
+
+from sklearn.preprocessing import MinMaxScaler
+
+from pinn_model import DEVICE, WoundHealingPINN
 
 PLOT_SAVE_PATH = 'plots'
 
@@ -36,9 +40,9 @@ def plot_training_convergence(adam_history: List[Dict], lbfgs_history: List[Dict
     fig, ax1 = plt.subplots(figsize=(12, 6))
 
     ax1.plot(df_combined['step'], df_combined['L_total'], label='Total Loss', color='black', linewidth=2)
-    ax1.plot(df_combined['step'], df_combined['L_data'], label='Data Loss ($L_{Data}$)', linestyle='--', color='blue')
-    ax1.plot(df_combined['step'], df_combined['L_phy'], label='Physics Loss ($L_{Phy}$)', linestyle='--', color='red')
-    ax1.plot(df_combined['step'], df_combined['L_bc'], label='BC Loss ($L_{BC}$)', linestyle='--', color='green')
+    ax1.plot(df_combined['step'], df_combined['L_data'], label='Data Loss ', linestyle='--', color='blue')
+    ax1.plot(df_combined['step'], df_combined['L_phy'], label='Physics Loss', linestyle='--', color='red')
+    ax1.plot(df_combined['step'], df_combined['L_bc'], label='BC Loss', linestyle='--', color='green')
 
     # Vertical line to separate training phases
     ax1.axvline(x=start_step, color='gray', linestyle=':', label='Adam $\to$ L-BFGS Transition')
@@ -57,8 +61,8 @@ def plot_training_convergence(adam_history: List[Dict], lbfgs_history: List[Dict
     # --- Plot B: Parameter Trajectory ---
     fig, ax2 = plt.subplots(figsize=(12, 6))
 
-    ax2.plot(df_combined['step'], df_combined['D'], label='Diffusivity ($D$)', color='darkorange', linewidth=2)
-    ax2.plot(df_combined['step'], df_combined['rho'], label='Proliferation ($\rho$)', color='purple', linewidth=2)
+    ax2.plot(df_combined['step'], df_combined['D'], label='Diffusivity', color='darkorange', linewidth=2)
+    ax2.plot(df_combined['step'], df_combined['rho'], label='Proliferation', color='purple', linewidth=2)
 
     ax2.axvline(x=start_step, color='gray', linestyle=':', label='Adam $\to$ L-BFGS Transition')
 
@@ -72,4 +76,50 @@ def plot_training_convergence(adam_history: List[Dict], lbfgs_history: List[Dict
     plt.savefig(Path(PLOT_SAVE_PATH) / f'{output_filename}_params.png')
     plt.close(fig)
 
-    print(f"\n✅ Training convergence plots saved to: {Path(PLOT_SAVE_PATH).resolve()}")
+    print(f"\n Training convergence plots saved to: {Path(PLOT_SAVE_PATH).resolve()}")
+
+
+def generate_prediction_grid(model: WoundHealingPINN, scaler: MinMaxScaler,
+                             resolution: int = 50) -> pd.DataFrame:
+    """
+    Generates a high-resolution spatio-temporal grid, runs the trained PINN model on it, and denormalizes the results.
+    """
+    # 1. Define High-Resolution Normalized Grid [0, 1]
+    # Create 1D arrays for each dimension
+    x_normalized = np.linspace(0.0, 1.0, resolution, dtype=np.float32)
+    y_normalized = np.linspace(0.0, 1.0, resolution, dtype=np.float32)
+    t_normalized = np.linspace(0.0, 1.0, resolution, dtype=np.float32)
+
+    # Create a 3D meshgrid
+    X_mesh, Y_mesh, T_mesh = np.meshgrid(x_normalized, y_normalized, t_normalized, indexing='ij')
+
+    # Flatten and combine into a tensor: (N_total, 3) where N_total = resolution^3
+    X_input_np = np.stack([X_mesh.flatten(), Y_mesh.flatten(), T_mesh.flatten()], axis=1)
+
+    # Convert to tensor and move to device
+    X_input_tensor = torch.tensor(X_input_np, dtype=torch.float32).to(DEVICE)
+
+    # 2. Evaluate Trained PINN
+    model.eval()  # Set model to evaluation mode
+    with torch.no_grad():
+        C_hat_normalized_tensor = model(X_input_tensor).cpu().numpy()
+    model.train()  # Set model back to training mode
+
+    # 3. Denormalize the Inputs (x, y, t) and Output (C_hat)
+
+    # The scaler was fitted on (x, y, t, C) data. We mimic this structure for denormalization.
+    X_dummy_output = np.concatenate([X_input_np, C_hat_normalized_tensor], axis=1)
+
+    # Inverse transform everything at once to get physical scales
+    X_denormalized = scaler.inverse_transform(X_dummy_output)
+
+    # 4. Create Output DataFrame
+    df_pred = pd.DataFrame({
+        'x': X_denormalized[:, 0],
+        'y': X_denormalized[:, 1],
+        't': X_denormalized[:, 2],
+        'C_pred': X_denormalized[:, 3]
+    })
+
+    print(f"Solution reconstructed on a {resolution}x{resolution}x{resolution} grid ({len(df_pred)} points).")
+    return df_pred
