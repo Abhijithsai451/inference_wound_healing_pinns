@@ -4,8 +4,9 @@ import pandas as pd
 import torch
 from torch.distributed.tensor.parallel import loss_parallel
 
-from data_preprocessing import import_data
+from pinn_data_preprocessing import import_data
 from logging_utils import setup_logger
+from wound_healing_tram.pinn_evaluation_utils import plot_training_convergence
 from wound_healing_tram.pinn_loss_functions import PINNLoss
 from wound_healing_tram.pinn_model import WoundHealingPINN, USE_FOURIER_FEATURES, get_device
 from wound_healing_tram.pinn_trainer import PINNTrainer
@@ -15,11 +16,11 @@ from tensor_data_utils import convert_to_tensors
 
 logger = setup_logger()
 DEVICE = get_device()
-NUM_COLLOCATION_POINTS = 50000
-NUM_BOUNDARY_POINTS = 10000
+NUM_COLLOCATION_POINTS = 2000
+NUM_BOUNDARY_POINTS = 1000
 NOISE_STD = 0.01
-ADAM_EPOCHS = 100
-ADAM_LR = 1e-3
+EPOCHS = 300
+LR = 1e-3
 def main():
 
     print("====================================================================================================")
@@ -97,9 +98,29 @@ def main():
         X_collocation=X_collocation_points,
         X_initial=X_init,
         X_spatial=X_spatial,
-        epochs=ADAM_EPOCHS,
-        lr=ADAM_LR
+        epochs=EPOCHS,
+        lr=LR
     )
+    logger.info(f"\n--- Final Parameters (After L-BFGS Refinement) ---")
+
+    lbfgs_loss_history, (D_final, rho_final) = trainer.train_lbfgs(
+        X_data=X_data,
+        C_data=C_data_noisy,
+        X_collocation=X_collocation_points,
+        X_initial=X_init,
+        X_spatial=X_spatial,
+        epochs=EPOCHS,
+        lr=LR
+    )
+    logger.info(f"\n--- Final Parameters (After L-BFGS Refinement) ---")
+    logger.info(f"  Diffusion Coeff D: {D_final.cpu().item():.6e}")
+    logger.info(f"  Proliferation Coeff rho: {rho_final.cpu().item():.6e}")
+
+    logger.info(f"\n--- Evaluation and Validation of the Final Model ---")
+
+    plot_training_convergence(adam_history=adam_loss_history,
+                              lbfgs_history=lbfgs_loss_history,
+                              output_filename="wound_healing_tram_convergence")
 
     logger.info("\nExecution complete ")
 

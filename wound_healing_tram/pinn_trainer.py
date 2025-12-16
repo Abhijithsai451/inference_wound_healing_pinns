@@ -4,6 +4,7 @@ import torch
 from pinn_model import WoundHealingPINN
 from pinn_loss_functions import PINNLoss
 from logging_utils import setup_logger
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 logger = setup_logger()
 class PINNTrainer:
     """
@@ -21,6 +22,7 @@ class PINNTrainer:
 
         # Optimizer Strategy (Adam) - Phase 4, Step 1
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        scheduler = ReduceLROnPlateau(optimizer, 'min',factor=0.5, patience=50, verbose=True, min_lr=1e-6)
 
         loss_history = []
 
@@ -37,9 +39,9 @@ class PINNTrainer:
 
             L_total.backward()
             optimizer.step()
-
+            scheduler.step(L_total)
             # Logging and Checkpointing
-            if epoch % 100 == 0 or epoch == 1:
+            if epoch % 5 == 0 or epoch == 1:
                 D, rho = self.model.pde_params
                 log_data = {
                     'epoch': epoch,
@@ -57,3 +59,62 @@ class PINNTrainer:
 
         logger.info(f"Adam training complete after {epochs} epochs.")
         return loss_history
+
+    def train_lbfgs(self, X_data, C_data, X_collocation, X_initial, X_spatial,
+                   epochs: int, lr: float):
+        """
+        Implements the L-BFGS-B optimizer strategy and the main training loop.
+        """
+        optimizer = torch.optim.LBFGS(
+            self.model.parameters(),
+            lr=lr,
+            max_iter=epochs,
+            line_search_fn='strong_wolfe'
+        )
+
+        loss_history = []
+        current_iter = 0
+
+        logger.info(f"\n[L-BFGS REFINEMENT] Starting L-BFGS optimization (Max Iter: {epochs}, LR: {lr})...")
+
+        # Define the mandatory closure function
+        def closure():
+            nonlocal current_iter
+            current_iter += 1
+
+            # 1. Reset gradients
+            optimizer.zero_grad()
+
+            # 2. Calculate loss
+            L_total, L_data, L_phy, L_bc, L_ic, L_n = self.loss.calculate_total_loss(
+                X_data, C_data, X_collocation, X_initial, X_spatial
+            )
+
+            # 3. Backpropagation
+            L_total.backward()
+
+            # 4. Logging and Checkpointing
+            if current_iter % 5 == 0 or current_iter == 1:
+                D, rho = self.model.pde_params
+                log_data = {
+                    'iter': current_iter,
+                    'L_total': L_total.item(),
+                    'L_data': L_data.item(),
+                    'L_phy': L_phy.item(),
+                    'L_bc': L_bc.item(),
+                    'D': D.item(),
+                    'rho': rho.item()
+                }
+                loss_history.append(log_data)
+
+                print(
+                    f"L-BFGS Iter {current_iter:4d} \nTotal Loss: {L_total.item():.5f} \nData Loss: {L_data.item():.5f} "
+                    f"\nPhysics Loss: {L_phy.item():.5f} \nBounds Loss: {L_bc.item():.5f} \nDiffusion(D): {D.item():.4e}"
+                    f" \nProliferation(ρ): {rho.item():.4e}\n")
+
+            return L_total
+
+        optimizer.step(closure)
+
+        logger.info(f"L-BFGS optimization complete after {current_iter} iterations.")
+        return loss_history, self.model.pde_params
