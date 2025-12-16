@@ -9,6 +9,45 @@ from logging_utils import setup_logger
 
 logger = setup_logger()
 
+
+def compute_physical_residual(model: WoundHealingPINN, X_collocation: torch.Tensor,
+                              dC_scale: float, dX_scale: float, dY_scale: float, dT_scale: float) -> torch.Tensor:
+    """
+    Computes the physical PDE residual using autograd and Jacobian scaling.
+    f = dC/dt - D * (d^2C/dx^2 + d^2C/dy^2) - rho * C * (1 - C)
+    """
+    xyt_normalized = X_collocation.clone()
+    xyt_normalized.requires_grad_(True)
+    C_hat = model(xyt_normalized)
+
+    # 1. First temporal derivative (dC/dt)
+    C_t = autograd.grad(C_hat, xyt_normalized, torch.ones_like(C_hat), create_graph=True, allow_unused=True)[0][:, 2]
+
+    # 2. Second spatial derivatives (d^2C/dx^2 and d^2C/dy^2)
+    C_x_norm = autograd.grad(C_hat, xyt_normalized, torch.ones_like(C_hat), create_graph=True, allow_unused=True)[0][:,
+               0].view(-1, 1)
+    C_xx_norm = \
+    autograd.grad(C_x_norm, xyt_normalized, torch.ones_like(C_x_norm), create_graph=True, allow_unused=True)[0][:, 0]
+
+    C_y_norm = autograd.grad(C_hat, xyt_normalized, torch.ones_like(C_hat), create_graph=True, allow_unused=True)[0][:,
+               1].view(-1, 1)
+    C_yy_norm = \
+    autograd.grad(C_y_norm, xyt_normalized, torch.ones_like(C_y_norm), create_graph=True, allow_unused=True)[0][:, 1]
+
+    # Get discovered parameters
+    D, rho = model.discovered_params
+
+    # --- Apply Jacobian Scaling ---
+    C_t_phys = C_t * (dC_scale / dT_scale)
+    C_xx_phys = C_xx_norm * (dC_scale / (dX_scale ** 2))
+    C_yy_phys = C_yy_norm * (dC_scale / (dY_scale ** 2))
+
+    # Calculate physical residual
+    f_phys = (C_t_phys -
+              D * (C_xx_phys + C_yy_phys) -
+              rho * C_hat.squeeze() * (1 - C_hat.squeeze()))
+
+    return f_phys
 class PINNLoss:
     """
     Manages the calculation of all loss components (Data, Physics, BC)  and the necessary Jacobian scaling for the PDE.
@@ -49,35 +88,9 @@ class PINNLoss:
         """
         Calculates the Mean Squared Error (MSE) of the physical PDE residual (f_phys) at collocation points.
         """
-        xyt_normalized = X_collocation.clone()
-        xyt_normalized.requires_grad_(True)
-        C_hat = self.model(xyt_normalized)
-
-        # 1. First temporal derivative (dC/dt)
-        C_t = autograd.grad(C_hat, xyt_normalized, torch.ones_like(C_hat), create_graph=True)[0][:, 2]
-
-        # 2. Second spatial derivatives (d^2C/dx^2 and d^2C/dy^2)
-        C_x_norm = autograd.grad(C_hat, xyt_normalized, torch.ones_like(C_hat), create_graph=True)[0][:, 0].view(-1, 1)
-        C_xx_norm = autograd.grad(C_x_norm, xyt_normalized, torch.ones_like(C_x_norm), create_graph=True)[0][:, 0]
-
-        C_y_norm = autograd.grad(C_hat, xyt_normalized, torch.ones_like(C_hat), create_graph=True)[0][:, 1].view(-1, 1)
-        C_yy_norm = autograd.grad(C_y_norm, xyt_normalized, torch.ones_like(C_y_norm), create_graph=True)[0][:, 1]
-
-        # Get discovered parameters
-        D, rho = self.model.pde_params
-
-        # --- Apply Jacobian Scaling ---
-        C_t_phys = C_t * (self.dC_scale / self.dT_scale)
-        C_xx_phys = C_xx_norm * (self.dC_scale / (self.dX_scale ** 2))
-        C_yy_phys = C_yy_norm * (self.dC_scale / (self.dY_scale ** 2))
-
-        # The PDE: f = dC/dt - D * (d^2C/dx^2 + d^2C/dy^2) - rho * C * (1 - C)
-        f_phys = (C_t_phys -
-                  D * (C_xx_phys + C_yy_phys) -
-                  rho * C_hat.squeeze() * (1 - C_hat.squeeze()))
-
+        f_phys = compute_physical_residual(self.model, X_collocation,
+                                           self.dC_scale, self.dX_scale, self.dY_scale, self.dT_scale)
         L_phy = nn.MSELoss()(f_phys, torch.zeros_like(f_phys))
-
         return L_phy
 
     def _boundary_loss(self, X_init: torch.Tensor, X_spatial: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

@@ -8,6 +8,7 @@ from typing import List, Dict
 from sklearn.preprocessing import MinMaxScaler
 
 from pinn_model import DEVICE, WoundHealingPINN
+from wound_healing_tram.pinn_loss_functions import compute_physical_residual
 
 PLOT_SAVE_PATH = 'plots'
 
@@ -122,4 +123,40 @@ def generate_prediction_grid(model: WoundHealingPINN, scaler: MinMaxScaler,
     })
 
     print(f"Solution reconstructed on a {resolution}x{resolution}x{resolution} grid ({len(df_pred)} points).")
+    return df_pred
+
+
+def analyze_residual_field(model: WoundHealingPINN, scaler: MinMaxScaler, df_pred: pd.DataFrame,
+                           resolution: int = 50) -> pd.DataFrame:
+    """
+    Calculates the absolute PDE residual |f(x,t)| on the reconstructed prediction grid.
+    """
+    print("\nCalculating PDE Residual Field...")
+
+    # 1. Prepare normalized input tensor from the prediction grid coordinates
+    X_input_np = df_pred[['x', 'y', 't']].values
+
+    X_normalized_coords = scaler.transform(np.concatenate([X_input_np, np.zeros((len(X_input_np), 1))], axis=1))[:, :3]
+
+    X_input_tensor = torch.tensor(X_normalized_coords, dtype=torch.float32).to(DEVICE)
+
+    dX_scale = scaler.data_max_[0] - scaler.data_min_[0]
+    dY_scale = scaler.data_max_[1] - scaler.data_min_[1]
+    dT_scale = scaler.data_max_[2] - scaler.data_min_[2]
+    dC_scale = scaler.data_max_[3] - scaler.data_min_[3]
+
+    # 2. Compute the physical residual (f_phys)
+    model.eval()
+    with torch.enable_grad():  # Autograd requires gradient tracking, even in eval mode
+        f_phys = compute_physical_residual(
+            model,
+            X_input_tensor,
+            dC_scale, dX_scale, dY_scale, dT_scale
+        ).cpu().numpy()
+    model.train()
+
+    # 3. Store the absolute residual
+    df_pred['Residual'] = np.abs(f_phys)
+
+    print(f"Residual field calculated. Max Residual: {df_pred['Residual'].max():.4e}")
     return df_pred
