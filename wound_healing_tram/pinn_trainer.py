@@ -33,7 +33,7 @@ class PINNTrainer:
             optimizer.zero_grad()
 
             # Calculate all loss components by calling the dedicated loss manager
-            L_total, L_data, L_phy, L_bc, L_ic, L_n = self.loss.calculate_total_loss(
+            L_total, L_data, L_phy, L_bc, L_ic, L_n, L_sindy = self.loss.calculate_total_loss(
                 X_data, C_data, X_collocation, X_initial, X_spatial
             )
 
@@ -54,8 +54,8 @@ class PINNTrainer:
                 }
                 loss_history.append(log_data)
 
-                print( f"\nEpoch {epoch:5d} \nL_T: {L_total.item():.5f} \nL_D: {L_data.item():.5f} \nL_P: {L_phy.item():.5f} "
-                       f"\nL_BC: {L_bc.item():.5f} \nDiffusivity(D): {D.item():.4e} \nProliferation(ρ): {rho.item():.4e}")
+                print( f"Epoch {epoch:5d} | L_T: {L_total.item():.5f} | L_D: {L_data.item():.5f} | L_P: {L_phy.item():.5f} "
+                       f"| L_BC: {L_bc.item():.5f} | Diffusivity(D): {D.item():.4e} | Proliferation(ρ): {rho.item():.4e}")
 
         logger.info(f"Adam training complete after {epochs} epochs.")
         return loss_history
@@ -86,7 +86,7 @@ class PINNTrainer:
             optimizer.zero_grad()
 
             # 2. Calculate loss
-            L_total, L_data, L_phy, L_bc, L_ic, L_n = self.loss.calculate_total_loss(
+            L_total, L_data, L_phy, L_bc, L_ic, L_n, L_sindy = self.loss.calculate_total_loss(
                 X_data, C_data, X_collocation, X_initial, X_spatial
             )
 
@@ -108,9 +108,9 @@ class PINNTrainer:
                 loss_history.append(log_data)
 
                 print(
-                    f"L-BFGS Iter {current_iter:4d} \nTotal Loss: {L_total.item():.5f} \nData Loss: {L_data.item():.5f} "
-                    f"\nPhysics Loss: {L_phy.item():.5f} \nBounds Loss: {L_bc.item():.5f} \nDiffusion(D): {D.item():.4e}"
-                    f" \nProliferation(ρ): {rho.item():.4e}\n")
+                    f"L-BFGS Iter {current_iter:4d} | Total Loss: {L_total.item():.5f} | Data Loss: {L_data.item():.5f} "
+                    f"| Physics Loss: {L_phy.item():.5f} | Bounds Loss: {L_bc.item():.5f} | Diffusion(D): {D.item():.4e}"
+                    f" | Proliferation(ρ): {rho.item():.4e}")
 
             return L_total
 

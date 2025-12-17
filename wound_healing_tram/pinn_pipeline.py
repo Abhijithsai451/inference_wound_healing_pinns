@@ -1,215 +1,170 @@
 from pathlib import Path
-
+from typing import Dict
 import pandas as pd
 import torch
-from torch.distributed.tensor.parallel import loss_parallel
 
 from pinn_data_preprocessing import import_data
 from logging_utils import setup_logger
-from wound_healing_tram.pinn_evaluation_utils import plot_training_convergence, generate_prediction_grid, \
-    analyze_residual_field
+from wound_healing_tram.pinn_evaluation_utils import (
+    plot_training_convergence,
+    generate_prediction_grid,
+    analyze_residual_field, plot_spatial_residuals
+)
 from wound_healing_tram.pinn_loss_functions import PINNLoss
 from wound_healing_tram.pinn_model import WoundHealingPINN, USE_FOURIER_FEATURES, get_device
 from wound_healing_tram.pinn_trainer import PINNTrainer
-from wound_healing_tram.tensor_data_utils import sample_collocation_points, noise_injection, sample_boundary_points
+from wound_healing_tram.tensor_data_utils import (
+    sample_collocation_points,
+    noise_injection,
+    sample_boundary_points,
+    convert_to_tensors
+)
 from wound_healing_tram.visualize_data import visualize_plots
-from tensor_data_utils import convert_to_tensors
 
+# Initialization
 logger = setup_logger()
 DEVICE = get_device()
 
-#%% Hyper Parameters
-NUM_COLLOCATION_POINTS = 200
+# %% Hyper Parameters
+NUM_COLLOCATION_POINTS = 500
 NUM_BOUNDARY_POINTS = 100
 NOISE_STD = 0.01
 EPOCHS = 30
+LBFGS_ITER = 30
 LR = 1e-3
 GRID_RESOLUTION = 50
-NOISE_LEVELS = [0.00, 0.05, 0.10] # 0%, 5%, 10%
-results = []
+NOISE_LEVELS = [0.00, 0.05, 0.10]
 
-#%% Utility Functions and Main Pipeline
-def run_pinn_experiment(noise_std: float, total_data: pd.DataFrame, is_extrapolation_test: bool = False) -> Dict:
+# Loss Weights
+W_DATA = 100.0
+W_PHY = 1.0
+W_BC = 10.0
+
+SINDY_MODE = True  # Set to True to discover the equation structure
+LAMBDA_SINDY = 1e-4 if SINDY_MODE else 0.0  # L1 Sparsity penalty
+
+
+def run_pinn_experiment(noise_std: float, total_data: pd.DataFrame) -> Dict:
     """
     Runs the full PINN training and evaluation pipeline for a given noise level.
     """
-    logger.info(f"\n================ STARTING EXPERIMENT (Noise: {noise_std * 100:.1f}%) ================")
+    logger.info(f"\n[BENCHMARK] Starting Experiment: Noise {noise_std * 100:.1f}%")
 
-    # --- 1. Data Prep and Tensors ---
-    # Convert data and sample points
+    # 1. Prepare Tensors
     X_data, C_data, scaler = convert_to_tensors(total_data)
-    X_collocation_points = sample_collocation_points(NUM_COLLOCATION_POINTS)
     C_data_noisy = noise_injection(C_data, noise_std)
+    X_coll = sample_collocation_points(NUM_COLLOCATION_POINTS).to(DEVICE)
     X_init, X_spatial = sample_boundary_points(NUM_BOUNDARY_POINTS)
 
-    # Move to device (logic similar to main function)
-    X_data = X_data.to(DEVICE)
-    X_collocation_points = X_collocation_points.to(DEVICE)
-    C_data_noisy = C_data_noisy.to(DEVICE)
-    X_init = X_init.to(DEVICE)
-    X_spatial = X_spatial.to(DEVICE)
+    X_data, C_data_noisy = X_data.to(DEVICE), C_data_noisy.to(DEVICE)
+    X_init, X_spatial = X_init.to(DEVICE), X_spatial.to(DEVICE)
 
-    # --- 2. Model, Loss, and Trainer Setup ---
+    # 2. Setup Model & Trainer
     pinn_model = WoundHealingPINN(use_ffe=USE_FOURIER_FEATURES).to(DEVICE)
-    loss_manager = PINNLoss(model=pinn_model, scaler=scaler, lambda_data=100.0, lambda_phy=1.0, lambda_bc=10.0)
-    trainer = PINNTrainer(pinn_model=pinn_model, loss_manager=loss_manager)
+    loss_fn = PINNLoss(model=pinn_model, scaler=scaler, lambda_data=W_DATA, lambda_phy=W_PHY, lambda_bc=W_BC, lambda_sindy=LAMBDA_SINDY)
+    trainer = PINNTrainer(model=pinn_model, loss=loss_fn)
 
-    # --- 3. Training (Adam + L-BFGS) ---
-    adam_history = trainer.train_adam(X_data, C_data_noisy, X_collocation_points, X_init, X_spatial, EPOCHS,
-                                      LR)
-    lbfgs_history, (D_final, rho_final) = trainer.train_lbfgs(X_data, C_data_noisy, X_collocation_points, X_init,
-                                                              X_spatial, EPOCHS, LR)
+    # 3. Train
+    adam_hist = trainer.train_adam(X_data, C_data_noisy, X_coll, X_init, X_spatial, epochs=EPOCHS, lr=LR)
+    lbfgs_hist, (D_f, rho_f) = trainer.train_lbfgs(X_data, C_data_noisy, X_coll, X_init, X_spatial, max_iter=LBFGS_ITER,
+                                                   lr=LR)
 
-    full_loss_history = adam_history + lbfgs_history
-
-    # --- 4. Evaluation ---
-    # a. Convergence Monitor
-    plot_training_convergence(adam_history, lbfgs_history, f'tram_conv_noise_{noise_std * 100:.0f}')
-
-    # b. Solution Reconstruction
-    df_predicted_solution = generate_prediction_grid(pinn_model, scaler, GRID_RESOLUTION)
-
-    # c. Residual Field Analysis
-    df_predicted_solution = analyze_residual_field(pinn_model, scaler, df_predicted_solution, GRID_RESOLUTION)
-
-    # d. Extrapolation Test (Simple error calculation)
-    # We skip the complex data partitioning for now and log the final error
-    final_loss = loss_manager.calculate_total_loss(X_data, C_data_noisy, X_collocation_points, X_init, X_spatial)[
-        0].item()
+    # 4. Quick Loss Check
+    final_l, _, _, _, _, _ = loss_fn.calculate_total_loss(X_data, C_data_noisy, X_coll, X_init, X_spatial)
 
     return {
         'noise_std': noise_std,
-        'D_final': D_final.item(),
-        'rho_final': rho_final.item(),
-        'Final_L_Total': final_loss,
-        'Predicted_Solution': df_predicted_solution  # For further analysis/plotting
+        'D_final': D_f.item(),
+        'rho_final': rho_f.item(),
+        'Final_L_Total': final_l.item()
     }
 
+
 def main():
-
-    print("====================================================================================================")
+    print("=" * 80)
     print("   PINN Wound Healing (TRAM) Project Execution")
-    print("====================================================================================================")
+    print("=" * 80)
 
-    # --- PHASE 1: Data Ingestion (Initial Step) ---
-    logger.info("\n Data Preparation and Ingestion]")
-
-    # Execute the utility function to get the combined data
+    # --- PHASE 1: Data Ingestion ---
+    logger.info("PHASE 1: Data Preparation and Ingestion")
     try:
         raw_cell_density_data = import_data()
     except Exception as e:
-        logger.info(f"\nFATAL ERROR: Could not complete data ingestion. Check utility file BASE_PATH. Error: {e}")
+        logger.error(f"FATAL ERROR: Ingestion failed. Error: {e}")
         return
 
     if raw_cell_density_data.empty:
-        logger.info("\n*** ERROR: Ingested DataFrame is empty. Cannot proceed. ***")
+        logger.error("Ingested DataFrame is empty. Cannot proceed.")
         return
 
-    logger.info("\n Ingestion Complete. Data Summary:")
-    logger.info(f"Total data points ingested: {len(raw_cell_density_data)}")
-    logger.info(f"Unique time slices/experiments: {raw_cell_density_data['ID'].nunique()}")
-    logger.debug(raw_cell_density_data.head(100))
-    logger.debug(raw_cell_density_data.columns.tolist())
+    # visualize_plots(raw_cell_density_data) # Uncomment if you want to see plots every time
 
-    logger.info("Data Visualization of the Raw Cell Density DataFrame")
-    visualize_plots(raw_cell_density_data)
-
-    logger.info("Data Refactoring and Tensor Conversion")
+    # --- PHASE 2 & 3: Initial Setup for Primary Run ---
+    logger.info("Tensor Conversion and Model Initialization")
     X_data, C_data, scaler = convert_to_tensors(raw_cell_density_data)
-
-    # Collocation point Generation
-    X_collocation_points = sample_collocation_points(NUM_COLLOCATION_POINTS)
-
-    # Adding noise to the data
     C_data_noisy = noise_injection(C_data, NOISE_STD)
-    logger.info("Collocation Points Generated and Noise Injected.")
-    # Generating Boundary Points
+    X_coll = sample_collocation_points(NUM_COLLOCATION_POINTS).to(DEVICE)
     X_init, X_spatial = sample_boundary_points(NUM_BOUNDARY_POINTS)
-    logger.info("Moving all the data tensors to the device for GPU Acceleration.")
 
-    X_data = X_data.to(DEVICE)
-    C_data_noisy = C_data_noisy.to(DEVICE)
-    X_collocation_points = X_collocation_points.to(DEVICE)
-    X_init = X_init.to(DEVICE)
-    X_spatial = X_spatial.to(DEVICE)
+    X_data, C_data_noisy = X_data.to(DEVICE), C_data_noisy.to(DEVICE)
+    X_init, X_spatial = X_init.to(DEVICE), X_spatial.to(DEVICE)
 
-    logger.info("Neural Network Architecture>>>>")
-    pinn_model = WoundHealingPINN(use_ffe=USE_FOURIER_FEATURES)
-    pinn_model = pinn_model.to(DEVICE)
-    loss = PINNLoss(model= pinn_model, scaler = scaler, lambda_data = 100.0, lambda_phy = 1.0)
+    pinn_model = WoundHealingPINN(use_ffe=USE_FOURIER_FEATURES).to(DEVICE)
+    loss_fn = PINNLoss(model=pinn_model, scaler=scaler, lambda_data=W_DATA, lambda_phy=W_PHY, lambda_bc=W_BC, lambda_sindy=LAMBDA_SINDY)
+    trainer = PINNTrainer(model=pinn_model, loss=loss_fn)
 
+    # --- PHASE 4: Primary Training (Adam + L-BFGS) ---
+    logger.info("Starting Primary Training Run")
 
-    L_total, L_data, L_phy, L_bc, L_ic, L_neumann = loss.calculate_total_loss(
-        X_data = X_data,
-        C_data = C_data_noisy,
-        X_collocation=X_collocation_points,
-        X_initial=X_init,
-        X_spatial=X_spatial
-    )
+    adam_loss_history = trainer.train_adam(X_data, C_data_noisy, X_coll, X_init, X_spatial, epochs=EPOCHS, lr=LR)
+    lbfgs_loss_history, (D_final, rho_final) = trainer.train_lbfgs(X_data, C_data_noisy, X_coll, X_init, X_spatial,
+                                                                   epochs=LBFGS_ITER, lr=LR)
+    if SINDY_MODE:
+        logger.info("PHASE 6: SINDy Sparse Equation Discovery Results")
+        # Assuming your model/loss has a way to provide the coefficient vector
+        coeffs = pinn_model.sindy_coefficients.cpu().detach().numpy().flatten()
+        # Terms defined in pinn_model.py
+        terms = ['1', 'C', 'C^2', 'C(1-C)', 'C_xx+C_yy', 'C*(C_xx+C_yy)']
 
-    logger.info("---Initial Loss Calculation Complete.-----")
+        print("\nDiscovered Equation:")
+        equation_str = "dC/dt = "
+        for i, val in enumerate(coeffs):
+            if abs(val) > 1e-3:  # Sparsity threshold for printing
+                equation_str += f"({val:.4f})*{terms[i]} + "
+        print(equation_str.rstrip(" + "))
+    else:
+        D, rho = pinn_model.discovered_params
+        logger.info(f"Final Discovery (Fisher-KPP): D = {D.item():.6e}, rho = {rho.item():.6e}")
 
-    D_init, rho_init = pinn_model.pde_params
-    logger.info(f"Total Loss: {L_total:.4f}, \nData Loss: {L_data:.4f}, \nPhysics Loss: {L_phy:.4f}, \nBC Loss: {L_bc:.4f},"
-                f"\nInitial Conditions Loss: {L_ic:.4f}, \nNeumann Boundary Loss: {L_neumann:.4f}"
-                f" \nDiffusivity (D): {D_init}, \nProliferation (rho): {rho_init} ")
+    # --- PHASE 5: Evaluation & Validation ---
+    logger.info("PHASE 5: Generating Evaluation Metrics")
 
-    trainer = PINNTrainer(model= pinn_model, loss = loss)
+    # 1. Plots
+    plot_training_convergence(adam_loss_history, lbfgs_loss_history, "primary_run_convergence")
 
-    adam_loss_history = trainer.train_adam(
-        X_data=X_data,
-        C_data=C_data_noisy,
-        X_collocation=X_collocation_points,
-        X_initial=X_init,
-        X_spatial=X_spatial,
-        epochs=EPOCHS,
-        lr=LR
-    )
-    logger.info(f"\n--- Final Parameters (After L-BFGS Refinement) ---")
+    # 2. Solution Reconstruction
+    df_predicted_solution = generate_prediction_grid(pinn_model, scaler, GRID_RESOLUTION)
 
-    lbfgs_loss_history, (D_final, rho_final) = trainer.train_lbfgs(
-        X_data=X_data,
-        C_data=C_data_noisy,
-        X_collocation=X_collocation_points,
-        X_initial=X_init,
-        X_spatial=X_spatial,
-        epochs=EPOCHS,
-        lr=LR
-    )
-    logger.info(f"\n--- Final Parameters (After L-BFGS Refinement) ---")
-    logger.info(f"  Diffusion Coeff D: {D_final.cpu().item():.6e}")
-    logger.info(f"  Proliferation Coeff rho: {rho_final.cpu().item():.6e}")
+    # 3. Residual Analysis
+    df_predicted_solution = analyze_residual_field(pinn_model, scaler, df_predicted_solution)
+    plot_spatial_residuals(df_predicted_solution)
+    logger.info(f"Reconstruction Complete. Sample predictions:\n{df_predicted_solution.head()}")
 
-    logger.info(f"\n--- Evaluation and Validation of the Final Model ---")
-
-    plot_training_convergence(adam_history=adam_loss_history,
-                              lbfgs_history=lbfgs_loss_history,
-                              output_filename="wound_healing_tram_convergence")
-
-    df_predicted_solution = generate_prediction_grid(
-        model=pinn_model,
-        scaler=scaler,
-        resolution=GRID_RESOLUTION
-    )
-    logger.info(f"Solution reconstruction prepared. Final DataFrame head:\n{df_predicted_solution.head()}")
+    # --- PHASE 6: Noise Robustness Benchmark ---
+    logger.info("PHASE 6: Running Noise Robustness Benchmark")
+    results = []
     for noise in NOISE_LEVELS:
-        experiment_result = run_pinn_experiment(
-            noise_std=noise,
-            total_data=raw_cell_density_data,
-            is_extrapolation_test=False  # Always start with interpolation test
-        )
-        results.append(experiment_result)
+        res = run_pinn_experiment(noise_std=noise, total_data=raw_cell_density_data)
+        results.append(res)
 
-        # --- Final Comparative Report (Partial) ---
-    results_df = pd.DataFrame([{'Noise (%)': r['noise_std'] * 100,
-                                'D_Final': r['D_final'],
-                                'rho_Final': r['rho_final'],
-                                'Final_L_Total': r['Final_L_Total']}
-                               for r in results])
-    logger.info("\n================ NOISE ROBUSTNESS BENCHMARK RESULTS ================")
-    print(results_df.to_markdown(index=False))
+    results_df = pd.DataFrame(results)
+    print("\n" + "=" * 30)
+    print("NOISE ROBUSTNESS RESULTS")
+    print("=" * 30)
+    print(results_df[['noise_std', 'D_final', 'rho_final', 'Final_L_Total']].to_markdown(index=False))
 
-    logger.info("Execution complete ")
+    logger.info("Full pipeline execution complete.")
+
 
 if __name__ == "__main__":
     main()

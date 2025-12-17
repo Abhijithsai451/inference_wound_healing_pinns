@@ -1,3 +1,5 @@
+from typing import Tuple, List
+
 import torch
 import torch.nn as nn
 import torch.autograd as autograd
@@ -110,6 +112,7 @@ class WoundHealingPINN(nn.Module):
 
         # Core Neural Network
         self.model = MLP(use_ffe=use_ffe)
+        self.sindy_coefficients = nn.Parameter(torch.randn(6,1)* 0.1)
 
         # Discovered Physics Parameters (D and rho)
         # These are trainable parameters. Log-space ensures D > 0 and rho > 0.
@@ -141,3 +144,28 @@ class WoundHealingPINN(nn.Module):
         xyt_normalized.requires_grad_(True)
         C_hat = self.forward(xyt_normalized)
         return C_hat
+    @staticmethod
+    def compute_sindy_library(C_hat: torch.Tensor, C_dxx_phys: torch.Tensor, C_dyy_phys: torch.Tensor) -> Tuple[torch.Tensor, List[str]]:
+        """
+        Generates the candidate library Theta for SINDy-PINN.
+        """
+        C = C_hat.squeeze()
+
+        # 1. Zero-order (Constant) and First-order (Linear) terms
+        T1 = torch.ones_like(C)            # Constant term (Bias)
+        T2 = C                             # Linear term (C)
+        T3 = C**2                          # Quadratic term (C^2)
+        T4 = C * (1 - C)                   # Fisher-KPP Reaction (C * (1 - C))
+
+        # 2. Second-order (Spatial Derivatives) terms
+        T5 = C_dxx_phys + C_dyy_phys       # Laplacian (D*C_xx + C_yy)
+        T6 = C * (C_dxx_phys + C_dyy_phys) # C * Laplacian (C * D*C_xx + C_yy)
+
+        # Assemble the library matrix Theta
+        Theta = torch.stack([T1, T2, T3, T4, T5, T6], dim=1)
+
+        library_terms = [
+            '1', 'C', 'C^2', 'C(1-C)', 'C_xx+C_yy', 'C*(C_xx+C_yy)'
+        ]
+
+        return Theta, library_terms

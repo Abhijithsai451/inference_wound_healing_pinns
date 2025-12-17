@@ -4,6 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from typing import List, Dict
+import seaborn as sns
 
 from sklearn.preprocessing import MinMaxScaler
 
@@ -148,15 +149,55 @@ def analyze_residual_field(model: WoundHealingPINN, scaler: MinMaxScaler, df_pre
     # 2. Compute the physical residual (f_phys)
     model.eval()
     with torch.enable_grad():  # Autograd requires gradient tracking, even in eval mode
-        f_phys = compute_physical_residual(
+        C_t_phys, C_hat, C_xx_phys, C_yy_phys = compute_physical_residual(
             model,
             X_input_tensor,
             dC_scale, dX_scale, dY_scale, dT_scale
-        ).cpu().numpy()
-    model.train()
+        )
+        # 2. Calculate the specific residual based on the current mode
+        D, rho = model.pde_params
+        f_phys = (C_t_phys -
+                  D * (C_xx_phys + C_yy_phys) -
+                  rho * C_hat.squeeze() * (1 - C_hat.squeeze()))
 
+        # 3. Convert to absolute numpy array for the dataframe
+        residual_values = torch.abs(f_phys).detach().cpu().numpy()
+    model.train()
+    f_phys = f_phys.detach().cpu().numpy()
     # 3. Store the absolute residual
     df_pred['Residual'] = np.abs(f_phys)
 
     print(f"Residual field calculated. Max Residual: {df_pred['Residual'].max():.4e}")
     return df_pred
+
+
+def plot_spatial_residuals(df_res: pd.DataFrame, output_dir: str = "plots/residuals"):
+    """
+    Creates heatmaps of the absolute PDE residual |f(x,t)| at various time steps.
+    High residual areas indicate where the model is not capturing the physics accurately.
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Select a few representative time points (e.g., Start, Middle, End)
+    unique_times = np.sort(df_res['t'].unique())
+    indices = np.linspace(0, len(unique_times) - 1, 4, dtype=int)
+    selected_times = unique_times[indices]
+
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+
+    for i, t_val in enumerate(selected_times):
+        # Filter data for the specific time slice
+        subset = df_res[df_res['t'] == t_val]
+
+        # Pivot for heatmap plotting
+        pivot_table = subset.pivot(index='y', columns='x', values='Residual')
+
+        sns.heatmap(pivot_table, ax=axes[i], cmap='viridis', cbar_kws={'label': '|f(x,y,t)|'})
+        axes[i].set_title(f"Residual at t = {t_val:.1f}h")
+        axes[i].invert_yaxis()  # Match spatial orientation
+
+    plt.tight_layout()
+    save_path = Path(output_dir) / "spatial_residual_evolution.png"
+    plt.savefig(save_path)
+    print(f"Spatial residual heatmaps saved to: {save_path}")
+    plt.show()

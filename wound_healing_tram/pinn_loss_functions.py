@@ -11,7 +11,7 @@ logger = setup_logger()
 
 
 def compute_physical_residual(model: WoundHealingPINN, X_collocation: torch.Tensor,
-                              dC_scale: float, dX_scale: float, dY_scale: float, dT_scale: float) -> torch.Tensor:
+                              dC_scale: float, dX_scale: float, dY_scale: float, dT_scale: float):
     """
     Computes the physical PDE residual using autograd and Jacobian scaling.
     f = dC/dt - D * (d^2C/dx^2 + d^2C/dy^2) - rho * C * (1 - C)
@@ -35,25 +35,20 @@ def compute_physical_residual(model: WoundHealingPINN, X_collocation: torch.Tens
     autograd.grad(C_y_norm, xyt_normalized, torch.ones_like(C_y_norm), create_graph=True, allow_unused=True)[0][:, 1]
 
     # Get discovered parameters
-    D, rho = model.discovered_params
+    D, rho = model.pde_params
 
     # --- Apply Jacobian Scaling ---
     C_t_phys = C_t * (dC_scale / dT_scale)
     C_xx_phys = C_xx_norm * (dC_scale / (dX_scale ** 2))
     C_yy_phys = C_yy_norm * (dC_scale / (dY_scale ** 2))
 
-    # Calculate physical residual
-    f_phys = (C_t_phys -
-              D * (C_xx_phys + C_yy_phys) -
-              rho * C_hat.squeeze() * (1 - C_hat.squeeze()))
-
-    return f_phys
+    return C_t_phys,C_hat, C_xx_phys, C_yy_phys
 class PINNLoss:
     """
     Manages the calculation of all loss components (Data, Physics, BC)  and the necessary Jacobian scaling for the PDE.
     """
     def __init__(self, model: WoundHealingPINN, scaler: MinMaxScaler,
-                 lambda_data: float = 1.0, lambda_phy: float = 1.0, lambda_bc: float = 1.0):
+                 lambda_data: float = 1.0, lambda_phy: float = 1.0, lambda_bc: float = 1.0, lambda_sindy: float = 0.0):
         """
         Initializes the loss calculator with the model, the data scaler,
         and the weight multipliers (lambdas).
@@ -64,9 +59,8 @@ class PINNLoss:
         self.lambda_data = lambda_data
         self.lambda_phy = lambda_phy
         self.lambda_bc = lambda_bc
-
-        # --- Jacobian Scaling Factors (Step 9) ---
-        # The scaler's 'data_max_' and 'data_min_' hold the max/min of [X, Y, T, C]
+        self.lambda_sindy = lambda_sindy
+        self.is_sindy_mode = (lambda_sindy > 0)
 
         self.dX_scale = scaler.data_max_[0] - scaler.data_min_[0]
         self.dY_scale = scaler.data_max_[1] - scaler.data_min_[1]
@@ -76,6 +70,10 @@ class PINNLoss:
         logger.info(f"Jacobian Scaling Factors computed:")
         logger.info(f"dX_scale: {self.dX_scale:.2f}, dY_scale: {self.dY_scale:.2f}, dT_scale: {self.dT_scale:.2f}, dC_scale: {self.dC_scale:.2f}")
 
+        if self.is_sindy_mode:
+            self.library_size = 6
+            self.model.lambda_sindy_coeffs = nn.Parameter(torch.randn(self.library_size,1, device = DEVICE)* 1e-2)
+            logger.info(f"Sindy Mode Activated and SINDy Coefficients initialized with random values.")
     def _data_loss(self, X_data, C_data) -> torch.Tensor:
         """
         Calculates the Mean Squared Error (MSE) between PINN prediction and observed data.
@@ -84,14 +82,41 @@ class PINNLoss:
         L_data = nn.MSELoss()(C_hat, C_data)
         return L_data
 
-    def _physics_loss(self, X_collocation) -> torch.Tensor:
+    def _physics_loss(self, X_collocation):
         """
         Calculates the Mean Squared Error (MSE) of the physical PDE residual (f_phys) at collocation points.
         """
-        f_phys = compute_physical_residual(self.model, X_collocation,
+
+        C_t_phys, C_hat, C_xx_phys, C_yy_phys = compute_physical_residual(self.model, X_collocation,
                                            self.dC_scale, self.dX_scale, self.dY_scale, self.dT_scale)
-        L_phy = nn.MSELoss()(f_phys, torch.zeros_like(f_phys))
-        return L_phy
+        if self.is_sindy_mode:
+            # SINDy-PINN Physics Loss
+            # 1. Generate Theta (Library of Candidate Terms)
+            Theta, _ = self.model.compute_sindy_library(C_hat, C_xx_phys, C_yy_phys)
+
+            # 2. SINDy Residual: f = dC/dt - Theta * Lambda
+            f_sindy = C_t_phys - torch.matmul(Theta, self.model.sindy_coefficients).squeeze()
+
+            L_phy = nn.MSELoss()(f_sindy, torch.zeros_like(f_sindy))
+
+            # Phase 6: Sparse Equation Discovery (L1 Regularization)
+            # This term forces most coefficients in Lambda to zero, ensuring sparsity.
+            L_sindy_l1 = torch.norm(self.model.sindy_coefficients, p=1)
+
+            return L_phy, L_sindy_l1
+        else:
+            # Standard Fisher-KPP Physics Loss
+            D, rho = self.model.pde_params
+
+            # Fisher-KPP PDE: f = dC/dt - D * (d^2C/dx^2 + d^2C/dy^2) - rho * C * (1 - C)
+            f_kpp = (C_t_phys -
+                     D * (C_xx_phys + C_yy_phys) -
+                     rho * C_hat.squeeze() * (1 - C_hat.squeeze()))
+
+            L_phy = nn.MSELoss()(f_kpp, torch.zeros_like(f_kpp))
+            return L_phy, torch.tensor(0.0).to(DEVICE)
+
+
 
     def _boundary_loss(self, X_init: torch.Tensor, X_spatial: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -133,9 +158,9 @@ class PINNLoss:
         Calculates the total weighted loss: L_Total = L_Data + L_Phy + L_BC.
         """
         L_data = self._data_loss(X_data, C_data)
-        L_phy = self._physics_loss(X_collocation)
+        L_phy, L_sindy_l1 = self._physics_loss(X_collocation)
         L_bc, L_ic, L_neumann = self._boundary_loss(X_initial, X_spatial)
 
-        L_total = self.lambda_data * L_data + self.lambda_phy * L_phy + self.lambda_bc * L_bc
+        L_total = self.lambda_data * L_data + self.lambda_phy * L_phy + self.lambda_bc * L_bc + self.lambda_sindy * L_sindy_l1
 
-        return L_total, L_data, L_phy, L_bc, L_ic, L_neumann
+        return L_total, L_data, L_phy, L_bc, L_ic, L_neumann, L_sindy_l1
