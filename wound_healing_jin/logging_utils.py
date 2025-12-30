@@ -23,9 +23,6 @@ def setup_logger(
         )
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
-
-        # --- Stream Handler (Prints to console/stderr) ---
-        # We use sys.stderr for better compatibility with logging levels
         stream_handler = logging.StreamHandler(sys.stderr)
         stream_handler.setFormatter(formatter)
         logger.addHandler(stream_handler)
