@@ -71,11 +71,10 @@ def fit_stridge(self, X, y):
 PINNs integrate the PDE directly into the neural network's architecture. The network $\hat{C}(x, t; \theta)$ is trained to minimize both the data mismatch and the PDE residual.
 
 ### Mathematical Approach
-The total loss function is defined as:
-$$\mathcal{L}_{total} = \mathcal{L}_{data} + \lambda_{phys} \mathcal{L}_{phys} + \lambda_{bc} \mathcal{L}_{bc}$$
+The total loss function is defined as: $$\mathcal{L}_{total}$$ = $$\mathcal{L}_{data} + \lambda_{phys} \mathcal{L}_{phys} + \lambda_{bc} \mathcal{L}_{bc}$$
 
 Where the physics loss $\mathcal{L}_{phys}$ enforces the Fisher-KPP residual:
-$$\mathcal{L}_{phys} = \frac{1}{N_f} \sum_{i=1}^{N_f} \left| \frac{\partial \hat{C}}{\partial t} - D \nabla^2 \hat{C} - \rho \hat{C}(1-\hat{C}) \right|^2$$
+$$\mathcal{L}_{phys}$$ = $$\frac{1}{N_f} \sum_{i=1}^{N_f} \left| \frac{\partial \hat{C}}{\partial t} - D \nabla^2 \hat{C} - \rho \hat{C}(1-\hat{C}) \right|^2$$
 
 ### Implementation Highlight: Physics Residual (Autograd)
 ```python
@@ -124,6 +123,3 @@ python wound_healing_jin/main_pipeline.py
 ```bash
 python wound_healing_tram/pinn_pipeline.py
 ```
-
-## Authors
-This project explores the intersection of deep learning and biomechanics for robust parameter inference in biological systems.
