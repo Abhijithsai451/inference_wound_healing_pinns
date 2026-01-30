@@ -72,10 +72,10 @@ PINNs integrate the PDE directly into the neural network's architecture. The net
 
 ### Mathematical Approach
 The total loss function is defined as:
-$$L_{total} = L_{data} + \lambda_{phys} L_{phys} + \lambda_{bc} L_{bc}$$
+$$L_{\text{total}} = L_{\text{data}} + \lambda_{\text{phys}} L_{\text{phys}} + \lambda_{\text{bc}} L_{\text{bc}}$$
 
-Where the physics loss $L_{phys}$ enforces the Fisher-KPP residual:
-$$L_{phys} = \frac{1}{N_f} \sum_{i=1}^{N_f} \left| \frac{\partial \hat{C}}{\partial t} - D \nabla^2 \hat{C} - \rho \hat{C}(1-\hat{C}) \right|^2$$
+Where the physics loss $L_{\text{phys}}$ enforces the Fisher-KPP residual:
+$$L_{\text{phys}} = \frac{1}{N_{f}} \sum_{i=1}^{N_{f}} \left[ \frac{\partial \hat{C}}{\partial t} - D \nabla^{2} \hat{C} - \rho \hat{C}(1 - \hat{C}) \right]^{2}$$
 
 ### Implementation Highlight: Physics Residual (Autograd)
 ```python
